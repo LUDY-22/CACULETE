@@ -1,0 +1,5 @@
+{
+  "name": "LUV Zecu soft ERP",
+  "description": "Sistema profissional de ERP e POS para gestão de lojas, estoque e finanças.",
+  "requestFramePermissions": ["camera"]
+}

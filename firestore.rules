@@ -1,0 +1,96 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    // Collection: users
+    // Fields: uid, email, role, storeId, createdAt
+    //
+    // Collection: products
+    // Fields: name, category, supplierId, purchasePrice, salePrice, stock, minStock, barcode, imageUrl, storeId, createdAt
+    //
+    // Collection: sales
+    // Fields: items, total, paymentMethod, cashierId, storeId, timestamp
+    //
+    // Collection: suppliers
+    // Fields: name, phone, email, address, storeId
+    //
+    // Collection: expenses
+    // Fields: description, amount, category, date, storeId
+    //
+    // Collection: logs
+    // Fields: userId, action, description, timestamp, storeId
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isStoreMember(storeId) {
+      return isAuthenticated() && getUserData().storeId == storeId;
+    }
+
+    function hasRole(role) {
+      return isAuthenticated() && getUserData().role == role;
+    }
+
+    function isAdmin() {
+      return hasRole('admin') || (request.auth.token.email == "Josuemantantu@gmail.com" && request.auth.token.email_verified == true);
+    }
+
+    function isManager() {
+      return hasRole('manager') || isAdmin();
+    }
+
+    function isCashier() {
+      return hasRole('cashier') || isManager();
+    }
+
+    // Rules
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isStoreMember(resource.data.storeId));
+      allow create: if isAuthenticated() && (isAdmin() || request.auth.uid == userId);
+      allow update: if isAuthenticated() && (isAdmin() || (request.auth.uid == userId && request.resource.data.role == resource.data.role));
+    }
+
+    match /products/{productId} {
+      allow read: if isStoreMember(resource.data.storeId);
+      allow create: if isStoreMember(request.resource.data.storeId) && isManager();
+      allow update: if isStoreMember(resource.data.storeId) && isManager();
+      allow delete: if isStoreMember(resource.data.storeId) && isAdmin();
+    }
+
+    match /sales/{saleId} {
+      allow read: if isStoreMember(resource.data.storeId);
+      allow create: if isStoreMember(request.resource.data.storeId) && isCashier();
+      allow update: if isStoreMember(resource.data.storeId) && isManager();
+      allow delete: if isStoreMember(resource.data.storeId) && isAdmin();
+    }
+
+    match /suppliers/{supplierId} {
+      allow read: if isStoreMember(resource.data.storeId);
+      allow write: if isStoreMember(request.resource.data.storeId) && isManager();
+    }
+
+    match /expenses/{expenseId} {
+      allow read: if isStoreMember(resource.data.storeId);
+      allow write: if isStoreMember(request.resource.data.storeId) && isManager();
+    }
+
+    match /logs/{logId} {
+      allow read: if isStoreMember(resource.data.storeId);
+      allow create: if isAuthenticated(); // Any action can be logged
+    }
+
+    match /settings/{settingId} {
+      allow read: if isStoreMember(resource.data.storeId);
+      allow write: if isStoreMember(request.resource.data.storeId) && isAdmin();
+    }
+  }
+}
