@@ -29,13 +29,19 @@ import {
   CreditCard,
   DollarSign,
   ArrowRightLeft,
-  Barcode
+  Barcode,
+  Camera,
+  AlertCircle,
+  Lock,
+  User
 } from 'lucide-react';
+import { Html5QrcodeScanner } from 'html5-qrcode';
 import { 
   onAuthStateChanged, 
   signInWithEmailAndPassword, 
   signOut, 
   createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
   GoogleAuthProvider,
   signInWithPopup
 } from 'firebase/auth';
@@ -197,8 +203,17 @@ export default function App() {
         if (docSnap.exists()) {
           setProfile(docSnap.data() as UserProfile);
         } else {
-          // Fallback for first admin if needed, but usually handled by signup
-          console.error("User profile not found");
+          // If user exists in Auth but not in Firestore, create a basic profile
+          const newProfile: UserProfile = {
+            uid: u.uid,
+            email: u.email || '',
+            displayName: u.displayName || u.email?.split('@')[0] || 'Usuário',
+            role: 'admin',
+            storeId: `store_${u.uid.slice(0, 8)}`,
+            createdAt: new Date().toISOString()
+          };
+          await setDoc(docRef, newProfile);
+          setProfile(newProfile);
         }
         setUser(u);
       } else {
@@ -295,7 +310,7 @@ export default function App() {
   }
 
   if (!user || !profile) {
-    return <LoginScreen onLoginSuccess={() => {}} setProfile={setProfile} />;
+    return <LoginScreen onLoginSuccess={(u: any) => setUser(u)} setProfile={setProfile} />;
   }
 
   const renderContent = () => {
@@ -364,11 +379,11 @@ export default function App() {
         <div className="p-4 border-t border-blue-800">
           <div className="flex items-center gap-3 mb-4 px-2">
             <div className="w-10 h-10 rounded-full bg-blue-700 flex items-center justify-center font-bold text-lg">
-              {profile?.displayName?.[0] || profile?.email[0].toUpperCase()}
+              {profile?.displayName?.[0] || profile?.email.split('@')[0][0].toUpperCase()}
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold truncate">{profile?.displayName || 'Usuário'}</p>
-              <p className="text-xs text-blue-300 capitalize">{profile?.role}</p>
+              <p className="text-sm font-semibold truncate">{profile?.displayName || profile?.email.split('@')[0]}</p>
+              <p className="text-xs text-blue-300 capitalize">{profile?.role === 'cashier' ? 'Vendedor' : profile?.role === 'admin' ? 'Administrador' : profile?.role}</p>
             </div>
           </div>
           <button 
@@ -428,77 +443,72 @@ function NavItem({ icon, label, active, onClick }: any) {
 // --- Screens ---
 
 function LoginScreen({ onLoginSuccess, setProfile }: any) {
-  const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isRegistering, setIsRegistering] = useState(false);
   const [displayName, setDisplayName] = useState('');
   const [storeName, setStoreName] = useState('');
+  const [role, setRole] = useState<UserRole>('admin');
   const [loading, setLoading] = useState(false);
-
-  const handleGoogleLogin = async () => {
-    setLoading(true);
-    setError('');
-    const provider = new GoogleAuthProvider();
-    try {
-      const result = await signInWithPopup(auth, provider);
-      const u = result.user;
-      
-      // Check if user profile exists
-      const docRef = doc(db, 'users', u.uid);
-      const docSnap = await getDoc(docRef);
-      
-      if (!docSnap.exists()) {
-        // Create new store for Google user if not exists
-        const storeId = `store_${Date.now()}`;
-        const newProfile = {
-          uid: u.uid,
-          email: u.email || '',
-          displayName: u.displayName || 'Usuário Google',
-          role: 'admin' as UserRole,
-          storeId,
-          createdAt: new Date().toISOString()
-        };
-        await setDoc(doc(db, 'users', u.uid), newProfile);
-        setProfile(newProfile);
-        
-        await addDoc(collection(db, 'logs'), {
-          userId: u.uid,
-          action: 'REGISTER_GOOGLE',
-          description: `Nova loja criada via Google`,
-          timestamp: new Date().toISOString(),
-          storeId
-        });
-      } else {
-        setProfile(docSnap.data() as UserProfile);
-      }
-    } catch (err: any) {
-      if (err.code === 'auth/popup-closed-by-user') {
-        // User closed the popup, no need for a scary error
-        return;
-      }
-      console.error(err);
-      setError('Erro ao entrar com Google. Tente novamente.');
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (password.length < 6) {
+    
+    let finalUsername = username.trim();
+    let finalPassword = password;
+
+    // Mapping special credentials requested by the user
+    if (finalUsername.toLowerCase() === 'admini' && finalPassword === '1234') {
+      finalUsername = 'admini';
+      finalPassword = 'password1234'; // Firebase requires 6+ chars
+    } else if (finalUsername.toLowerCase() === 'vende' && finalPassword === '4321') {
+      finalUsername = 'vende';
+      finalPassword = 'password4321'; // Firebase requires 6+ chars
+    } else if (finalPassword.length < 6) {
       setError('A senha deve ter pelo menos 6 caracteres.');
       return;
     }
+
     setLoading(true);
     setError('');
     try {
-      await signInWithEmailAndPassword(auth, email, password);
+      let email = finalUsername.toLowerCase();
+      if (!email.includes('@')) {
+        email = `${email}@luvzecu.com`;
+      }
+      await signInWithEmailAndPassword(auth, email, finalPassword);
     } catch (err: any) {
+      // Auto-provision default users if they don't exist
+      const isSpecial = (username.toLowerCase() === 'admini' && password === '1234') || 
+                        (username.toLowerCase() === 'vende' && password === '4321');
+      
+      if (isSpecial && (err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential')) {
+        try {
+          const email = `${finalUsername.toLowerCase()}@luvzecu.com`;
+          const userCredential = await createUserWithEmailAndPassword(auth, email, finalPassword);
+          const u = userCredential.user;
+          
+          const newProfile = {
+            uid: u.uid,
+            email: email,
+            displayName: username.toLowerCase() === 'admini' ? 'Administrador' : 'Vendedor',
+            role: username.toLowerCase() === 'admini' ? 'admin' : 'cashier',
+            storeId: 'store_default',
+            createdAt: new Date().toISOString()
+          };
+          await setDoc(doc(db, 'users', u.uid), newProfile);
+          setProfile(newProfile);
+          return; // Success
+        } catch (regErr: any) {
+          setError('Erro ao configurar acesso padrão: ' + regErr.message);
+        }
+      }
+
       if (err.code === 'auth/configuration-not-found') {
-        setError('O login por email não está ativado no Firebase. Use o Google ou ative o provedor no console.');
-      } else if (err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found') {
-        setError('Email ou senha incorretos.');
+        setError('O login não está configurado corretamente no Firebase.');
+      } else if (err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential') {
+        setError('Usuário ou senha incorretos.');
       } else {
         setError(err.message);
       }
@@ -516,15 +526,16 @@ function LoginScreen({ onLoginSuccess, setProfile }: any) {
     setLoading(true);
     setError('');
     try {
+      const email = `${username.toLowerCase().trim()}@luvzecu.com`;
       const userCredential = await createUserWithEmailAndPassword(auth, email, password);
       const u = userCredential.user;
       
       const storeId = `store_${Date.now()}`;
       const newProfile = {
         uid: u.uid,
-        email: u.email || '',
+        email: email,
         displayName,
-        role: 'admin' as UserRole,
+        role: role,
         storeId,
         createdAt: new Date().toISOString()
       };
@@ -534,21 +545,19 @@ function LoginScreen({ onLoginSuccess, setProfile }: any) {
       await addDoc(collection(db, 'logs'), {
         userId: u.uid,
         action: 'REGISTER',
-        description: `Nova loja criada: ${storeName}`,
+        description: `Nova loja criada: ${storeName} (Usuário: ${username})`,
         timestamp: new Date().toISOString(),
         storeId
       });
 
     } catch (err: any) {
       console.error(err);
-      if (err.code === 'auth/configuration-not-found') {
-        setError('O registro por email não está ativado. Ative "E-mail/Senha" no console do Firebase.');
-      } else if (err.code === 'auth/weak-password') {
+      if (err.code === 'auth/weak-password') {
         setError('A senha é muito fraca. Use pelo menos 6 caracteres.');
       } else if (err.code === 'auth/email-already-in-use') {
-        setError('Este email já está em uso.');
+        setError('Este nome de usuário já está em uso. Escolha outro.');
       } else {
-        setError('Erro ao criar conta. Verifique os dados ou use o Google Login.');
+        setError('Erro ao criar conta. Verifique os dados inseridos.');
       }
     } finally {
       setLoading(false);
@@ -558,45 +567,171 @@ function LoginScreen({ onLoginSuccess, setProfile }: any) {
   return (
     <div className="min-h-screen bg-blue-900 flex items-center justify-center p-4">
       <Card className="w-full max-w-md">
-        <div className="text-center mb-8">
-          <div className="bg-blue-100 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4">
-            <Store className="w-8 h-8 text-blue-900" />
+          <div className="text-center mb-8">
+            <div className="bg-blue-100 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4">
+              <Store className="w-8 h-8 text-blue-900" />
+            </div>
+            <h1 className="text-2xl font-bold text-gray-900">LUV Zecu soft</h1>
+            <p className="text-gray-500">{isRegistering ? 'Crie sua conta de acesso' : 'Acesse seu sistema de gestão'}</p>
+            {!isRegistering && (
+              <div className="mt-4 p-3 bg-blue-50 rounded-xl border border-blue-100 text-xs text-blue-700">
+                <p className="font-bold mb-1">Acessos Padrão:</p>
+                <div className="flex justify-around">
+                  <div>Admin: <span className="font-mono">Admini</span> / <span className="font-mono">1234</span></div>
+                  <div>Vendedor: <span className="font-mono">Vende</span> / <span className="font-mono">4321</span></div>
+                </div>
+              </div>
+            )}
           </div>
-          <h1 className="text-2xl font-bold text-gray-900">LUV Zecu soft</h1>
-          <p className="text-gray-500">{isRegistering ? 'Crie sua conta empresarial' : 'Acesse seu sistema de gestão'}</p>
-        </div>
 
         <div className="space-y-4">
-          <Button 
-            variant="outline" 
-            className="w-full py-3 border-2 border-gray-100"
-            onClick={handleGoogleLogin}
-            disabled={loading}
-          >
-            <img src="https://www.gstatic.com/firebase/dashboards/images/google-logo.svg" alt="Google" className="w-5 h-5" />
-            Entrar com Google
-          </Button>
-
-          <div className="relative py-2">
-            <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-gray-100"></div></div>
-            <div className="relative flex justify-center text-xs uppercase"><span className="bg-white px-2 text-gray-400">Ou use seu email</span></div>
-          </div>
-
           <form onSubmit={isRegistering ? handleRegister : handleLogin} className="space-y-4">
             {isRegistering && (
               <>
                 <Input label="Nome Completo" value={displayName} onChange={(e: any) => setDisplayName(e.target.value)} required />
                 <Input label="Nome da Loja" value={storeName} onChange={(e: any) => setStoreName(e.target.value)} required />
+                <div className="flex flex-col gap-1">
+                  <label className="text-sm font-medium text-gray-700">Tipo de Acesso</label>
+                  <select 
+                    className="px-4 py-2 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500"
+                    value={role}
+                    onChange={(e) => setRole(e.target.value as UserRole)}
+                  >
+                    <option value="admin">Administrador</option>
+                    <option value="cashier">Vendedor</option>
+                  </select>
+                </div>
               </>
             )}
-            <Input label="Email" type="email" value={email} onChange={(e: any) => setEmail(e.target.value)} required />
+            <div className="space-y-1">
+              <Input label="Nome de Usuário ou Email" value={username} onChange={(e: any) => setUsername(e.target.value)} required />
+              {!isRegistering && (
+                <p className="text-[10px] text-gray-400 px-1">
+                  Dica: Você pode usar seu nome de usuário (ex: joao) ou seu e-mail completo.
+                </p>
+              )}
+            </div>
             <Input label="Senha" type="password" value={password} onChange={(e: any) => setPassword(e.target.value)} required />
             
-            {error && <p className="text-red-500 text-sm bg-red-50 p-3 rounded-lg border border-red-100">{error}</p>}
+            {error && (
+              <div className="p-3 bg-red-50 border border-red-100 text-red-600 rounded-xl text-sm flex flex-col gap-2">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{error}</span>
+                </div>
+                {error.includes('operation-not-allowed') && (
+                  <div className="mt-1 p-2 bg-white rounded border border-red-200 text-[11px]">
+                    <p className="font-bold mb-1">Ação Necessária:</p>
+                    <p>O login por E-mail está desativado no Firebase.</p>
+                    <button 
+                      onClick={() => window.open('https://console.firebase.google.com/project/x-alcove-387912/authentication/providers', '_blank')}
+                      className="text-blue-600 underline font-bold mt-1 block"
+                    >
+                      Clique aqui para abrir o painel e ativar
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
             
             <Button type="submit" className="w-full py-3 text-lg" disabled={loading}>
               {loading ? 'Processando...' : (isRegistering ? 'Criar Conta' : 'Entrar no Sistema')}
             </Button>
+
+            {!isRegistering && (
+              <div className="space-y-3 mt-6">
+                <div className="relative">
+                  <div className="absolute inset-0 flex items-center">
+                    <div className="w-full border-t border-gray-200"></div>
+                  </div>
+                  <div className="relative flex justify-center text-xs uppercase">
+                    <span className="px-2 bg-white text-gray-400">Ou use</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-2">
+                  <Button 
+                    type="button"
+                    onClick={async () => {
+                      setLoading(true);
+                      try {
+                        const provider = new GoogleAuthProvider();
+                        await signInWithPopup(auth, provider);
+                      } catch (err: any) {
+                        setError('Erro Google: ' + err.message);
+                      } finally {
+                        setLoading(false);
+                      }
+                    }}
+                    className="w-full py-2.5 bg-white border border-gray-300 text-gray-700 rounded-xl font-medium hover:bg-gray-50 flex items-center justify-center gap-2"
+                  >
+                    <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-4 h-4" alt="Google" />
+                    Entrar com Google
+                  </Button>
+
+                  <Button 
+                    type="button"
+                    onClick={() => {
+                      const demoProfile: UserProfile = {
+                        uid: 'demo_user',
+                        email: 'demo@luvzecu.com',
+                        displayName: 'Usuário Demo',
+                        role: 'admin',
+                        storeId: 'store_demo',
+                        createdAt: new Date().toISOString()
+                      };
+                      setProfile(demoProfile);
+                      onLoginSuccess({ uid: 'demo_user', email: 'demo@luvzecu.com' });
+                    }}
+                    className="w-full py-2.5 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-xl font-medium hover:bg-emerald-100 flex items-center justify-center gap-2"
+                  >
+                    🚀 Modo de Demonstração
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {isRegistering && (
+              <button 
+                type="button"
+                onClick={() => setIsRegistering(false)}
+                className="w-full text-center text-sm text-gray-500 hover:underline mt-2"
+              >
+                Já tem uma conta? Faça login
+              </button>
+            )}
+
+            {!isRegistering && (
+              <div className="space-y-2 mt-4">
+                <button 
+                  type="button"
+                  onClick={async () => {
+                    if (!username.includes('@')) {
+                      alert('Por favor, insira seu e-mail completo para redefinir a senha.');
+                      return;
+                    }
+                    try {
+                      await sendPasswordResetEmail(auth, username.trim());
+                      alert('E-mail de redefinição enviado!');
+                    } catch (err: any) {
+                      alert('Erro ao enviar e-mail: ' + err.message);
+                    }
+                  }}
+                  className="w-full text-center text-sm text-blue-600 hover:underline"
+                >
+                  Esqueceu a senha?
+                </button>
+                <div className="border-t border-gray-100 pt-4">
+                  <button 
+                    type="button"
+                    onClick={() => setIsRegistering(true)}
+                    className="w-full text-center text-sm text-gray-500 hover:underline"
+                  >
+                    Não tem uma conta? Registre sua loja
+                  </button>
+                </div>
+              </div>
+            )}
           </form>
         </div>
 
@@ -1002,8 +1137,55 @@ function POS({ products, profile, logAction, setSelectedSaleForReceipt }: { prod
   );
 }
 
+function BarcodeScanner({ onScan, onClose }: { onScan: (code: string) => void, onClose: () => void }) {
+  useEffect(() => {
+    const scanner = new Html5QrcodeScanner(
+      "reader",
+      { fps: 10, qrbox: { width: 250, height: 250 } },
+      /* verbose= */ false
+    );
+
+    scanner.render(
+      (decodedText) => {
+        onScan(decodedText);
+        scanner.clear();
+        onClose();
+      },
+      (error) => {
+        // console.warn(error);
+      }
+    );
+
+    return () => {
+      scanner.clear().catch(error => console.error("Failed to clear scanner", error));
+    };
+  }, [onScan, onClose]);
+
+  return (
+    <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+      <div className="bg-white rounded-2xl p-6 w-full max-w-md relative overflow-hidden">
+        <button 
+          onClick={onClose}
+          className="absolute top-4 right-4 z-10 p-2 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors"
+        >
+          <X size={20} />
+        </button>
+        <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+          <Camera className="text-blue-600" />
+          Escanear Código de Barras
+        </h3>
+        <div id="reader" className="w-full rounded-xl overflow-hidden border-2 border-dashed border-gray-200"></div>
+        <p className="text-center text-sm text-gray-500 mt-4">
+          Posicione o código de barras dentro do quadrado para escanear.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function ProductManagement({ products, profile, logAction, suppliers }: any) {
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [categoryFilter, setCategoryFilter] = useState('Todas');
   const [searchTerm, setSearchTerm] = useState('');
@@ -1180,7 +1362,20 @@ function ProductManagement({ products, profile, logAction, suppliers }: any) {
                   {suppliers.map((s: any) => <option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
               </div>
-              <Input label="Código de Barras" value={formData.barcode} onChange={(e: any) => setFormData({...formData, barcode: e.target.value})} />
+              <div className="flex flex-col gap-1">
+                <label className="text-sm font-medium text-gray-700">Código de Barras</label>
+                <div className="flex gap-2">
+                  <input 
+                    type="text"
+                    className="flex-1 px-4 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
+                    value={formData.barcode}
+                    onChange={(e) => setFormData({...formData, barcode: e.target.value})}
+                  />
+                  <Button type="button" variant="secondary" onClick={() => setIsScannerOpen(true)}>
+                    <Camera size={20} />
+                  </Button>
+                </div>
+              </div>
               <Input label="Preço de Compra (Kz)" type="number" value={formData.purchasePrice} onChange={(e: any) => setFormData({...formData, purchasePrice: Number(e.target.value)})} />
               <Input label="Preço de Venda (Kz)" type="number" value={formData.salePrice} onChange={(e: any) => setFormData({...formData, salePrice: Number(e.target.value)})} />
               <Input label="Estoque Inicial" type="number" value={formData.stock} onChange={(e: any) => setFormData({...formData, stock: Number(e.target.value)})} />
@@ -1193,6 +1388,13 @@ function ProductManagement({ products, profile, logAction, suppliers }: any) {
             </form>
           </motion.div>
         </div>
+      )}
+
+      {isScannerOpen && (
+        <BarcodeScanner 
+          onScan={(code) => setFormData({...formData, barcode: code})} 
+          onClose={() => setIsScannerOpen(false)} 
+        />
       )}
     </div>
   );
@@ -1496,13 +1698,12 @@ function Reports({ sales, products, expenses }: any) {
 
 function UserManagement({ users, profile, logAction }: any) {
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [formData, setFormData] = useState({ email: '', password: '', displayName: '', role: 'cashier' as UserRole });
+  const [formData, setFormData] = useState({ username: '', password: '', displayName: '', role: 'cashier' as UserRole });
 
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
       // In a real app, you'd use a Cloud Function to create users without logging out the admin
-      // For this demo, we'll simulate or just show the UI
       alert("Para criar novos usuários, use o console do Firebase ou uma Cloud Function. Esta interface demonstra a gestão.");
       setIsModalOpen(false);
     } catch (err) {
@@ -1526,11 +1727,11 @@ function UserManagement({ users, profile, logAction }: any) {
                 </div>
                 <div>
                   <p className="font-bold text-gray-800">{u.displayName || 'Sem Nome'}</p>
-                  <p className="text-xs text-gray-500">{u.email}</p>
+                  <p className="text-xs text-gray-500">Usuário: {u.email.split('@')[0]}</p>
                 </div>
               </div>
               <span className={`px-3 py-1 rounded-full text-xs font-bold capitalize ${u.role === 'admin' ? 'bg-purple-50 text-purple-600' : u.role === 'manager' ? 'bg-blue-50 text-blue-600' : 'bg-gray-50 text-gray-600'}`}>
-                {u.role}
+                {u.role === 'cashier' ? 'Vendedor' : u.role === 'admin' ? 'Administrador' : u.role}
               </span>
             </div>
           ))}
@@ -1542,7 +1743,7 @@ function UserManagement({ users, profile, logAction }: any) {
           <Card className="w-full max-w-md" title="Novo Usuário">
             <form onSubmit={handleCreateUser} className="space-y-4">
               <Input label="Nome" value={formData.displayName} onChange={(e: any) => setFormData({...formData, displayName: e.target.value})} required />
-              <Input label="Email" type="email" value={formData.email} onChange={(e: any) => setFormData({...formData, email: e.target.value})} required />
+              <Input label="Nome de Usuário" value={formData.username} onChange={(e: any) => setFormData({...formData, username: e.target.value})} required />
               <Input label="Senha" type="password" value={formData.password} onChange={(e: any) => setFormData({...formData, password: e.target.value})} required />
               <div className="flex flex-col gap-1">
                 <label className="text-sm font-medium text-gray-700">Cargo</label>
@@ -1551,8 +1752,7 @@ function UserManagement({ users, profile, logAction }: any) {
                   value={formData.role}
                   onChange={(e) => setFormData({...formData, role: e.target.value as UserRole})}
                 >
-                  <option value="cashier">Caixa</option>
-                  <option value="manager">Gerente</option>
+                  <option value="cashier">Vendedor</option>
                   <option value="admin">Administrador</option>
                 </select>
               </div>
@@ -1687,7 +1887,7 @@ function AuditLogs({ logs, users }: any) {
                     <p className="text-xs text-gray-400">{new Date(log.timestamp).toLocaleString()}</p>
                   </div>
                   <p className="text-sm text-gray-600">{log.description}</p>
-                  <p className="text-xs text-gray-400 mt-1 font-medium">Por: {user?.displayName || user?.email || 'Sistema'}</p>
+                  <p className="text-xs text-gray-400 mt-1 font-medium">Por: {user?.displayName || user?.email?.split('@')[0] || 'Sistema'}</p>
                 </div>
               </div>
             );
