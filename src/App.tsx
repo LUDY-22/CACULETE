@@ -733,15 +733,23 @@ function StatCard({ icon, label, value, color }: any) {
 function POS({ products, profile, logAction, setSelectedSaleForReceipt }: { products: Product[], profile: UserProfile, logAction: any, setSelectedSaleForReceipt: any }) {
   const [cart, setCart] = useState<SaleItem[]>([]);
   const [search, setSearch] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState('Todas');
   const [paymentMethod, setPaymentMethod] = useState('Dinheiro');
   const [amountReceived, setAmountReceived] = useState<number>(0);
   const [isProcessing, setIsProcessing] = useState(false);
   const [showCartMobile, setShowCartMobile] = useState(false);
 
-  const filteredProducts = products.filter(p => 
-    p.name.toLowerCase().includes(search.toLowerCase()) || 
-    p.barcode.includes(search)
-  );
+  const categories = useMemo(() => {
+    const cats = new Set(products.map(p => p.category).filter(Boolean));
+    return ['Todas', ...Array.from(cats)];
+  }, [products]);
+
+  const filteredProducts = products.filter(p => {
+    const matchesSearch = p.name.toLowerCase().includes(search.toLowerCase()) || 
+                         p.barcode.includes(search);
+    const matchesCategory = selectedCategory === 'Todas' || p.category === selectedCategory;
+    return matchesSearch && matchesCategory;
+  });
 
   const total = cart.reduce((acc, item) => acc + item.total, 0);
   const change = amountReceived > total ? amountReceived - total : 0;
@@ -838,21 +846,38 @@ function POS({ products, profile, logAction, setSelectedSaleForReceipt }: { prod
     <div className="relative grid grid-cols-1 lg:grid-cols-3 gap-6 h-[calc(100vh-120px)]">
       {/* Product Selection */}
       <div className={`lg:col-span-2 flex flex-col gap-4 ${showCartMobile ? 'hidden lg:flex' : 'flex'}`}>
-        <div className="relative">
-          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
-          <input 
-            type="text"
-            placeholder="Pesquisar produto ou bipar código..."
-            className="w-full pl-12 pr-4 py-4 bg-white border border-gray-200 rounded-2xl shadow-sm focus:ring-2 focus:ring-blue-500 outline-none"
-            value={search}
-            onChange={handleSearchChange}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && filteredProducts.length === 1) {
-                addToCart(filteredProducts[0]);
-                setSearch('');
-              }
-            }}
-          />
+        <div className="flex flex-col md:flex-row gap-4">
+          <div className="relative flex-1">
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+            <input 
+              type="text"
+              placeholder="Pesquisar produto ou bipar código..."
+              className="w-full pl-12 pr-4 py-4 bg-white border border-gray-200 rounded-2xl shadow-sm focus:ring-2 focus:ring-blue-500 outline-none"
+              value={search}
+              onChange={handleSearchChange}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && filteredProducts.length === 1) {
+                  addToCart(filteredProducts[0]);
+                  setSearch('');
+                }
+              }}
+            />
+          </div>
+          <div className="flex items-center gap-2 overflow-x-auto pb-2 md:pb-0 scrollbar-hide">
+            {categories.map(cat => (
+              <button
+                key={cat}
+                onClick={() => setSelectedCategory(cat)}
+                className={`px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all ${
+                  selectedCategory === cat 
+                    ? 'bg-blue-600 text-white shadow-md' 
+                    : 'bg-white text-gray-600 border border-gray-100 hover:border-blue-200'
+                }`}
+              >
+                {cat}
+              </button>
+            ))}
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-4 pb-20 lg:pb-4">
@@ -980,6 +1005,8 @@ function POS({ products, profile, logAction, setSelectedSaleForReceipt }: { prod
 function ProductManagement({ products, profile, logAction, suppliers }: any) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [categoryFilter, setCategoryFilter] = useState('Todas');
+  const [searchTerm, setSearchTerm] = useState('');
   const [formData, setFormData] = useState({
     name: '',
     category: '',
@@ -989,6 +1016,18 @@ function ProductManagement({ products, profile, logAction, suppliers }: any) {
     stock: 0,
     minStock: 5,
     barcode: ''
+  });
+
+  const categories = useMemo(() => {
+    const cats = new Set(products.map((p: Product) => p.category).filter(Boolean));
+    return ['Todas', ...Array.from(cats)];
+  }, [products]);
+
+  const filteredProducts = products.filter((p: Product) => {
+    const matchesCategory = categoryFilter === 'Todas' || p.category === categoryFilter;
+    const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                         p.barcode.includes(searchTerm);
+    return matchesCategory && matchesSearch;
   });
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -1034,12 +1073,31 @@ function ProductManagement({ products, profile, logAction, suppliers }: any) {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <h1 className="text-2xl font-bold text-gray-900">Gestão de Produtos</h1>
-        <Button onClick={() => setIsModalOpen(true)}>
-          <Plus size={20} />
-          Novo Produto
-        </Button>
+        <div className="flex flex-col sm:flex-row items-center gap-3 w-full md:w-auto">
+          <div className="relative w-full sm:w-64">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+            <input 
+              type="text"
+              placeholder="Pesquisar..."
+              className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-white text-sm"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
+          <select 
+            className="w-full sm:w-auto px-4 py-2 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-white text-sm"
+            value={categoryFilter}
+            onChange={(e) => setCategoryFilter(e.target.value)}
+          >
+            {categories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+          </select>
+          <Button onClick={() => setIsModalOpen(true)} className="w-full sm:w-auto">
+            <Plus size={20} />
+            Novo Produto
+          </Button>
+        </div>
       </div>
 
       <Card>
@@ -1055,7 +1113,7 @@ function ProductManagement({ products, profile, logAction, suppliers }: any) {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {products.map((p: Product) => (
+              {filteredProducts.map((p: Product) => (
                 <tr key={p.id} className="hover:bg-gray-50 transition-colors">
                   <td className="py-4">
                     <div className="flex items-center gap-3">
